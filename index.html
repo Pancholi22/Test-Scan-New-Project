@@ -2,43 +2,136 @@
 <html>
 
 <head>
-    <title>Hello World</title>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Scan - DWT with Local Network Access (LNA)</title>
+
+    <!-- Dynamsoft scripts (keep your original paths) -->
     <script type="text/javascript" src="Resources/dynamsoft.webtwain.initiate.js"></script>
     <script type="text/javascript" src="Resources/dynamsoft.webtwain.config.js"></script>
+
+    <!--
+      Notes:
+      - This page checks Chrome's Local Network Access permission before initializing the scanner
+      - If this page is loaded inside an iframe (e.g., Business Central control add-in) the iframe
+        must include: allow="local-network-access"
+      - For Business Central control add-ins you should also set RequestedPermissions = 'local-network-access'
+    -->
 </head>
 
 <body>
-	<button onclick="AcquireImage();">Scan</button>
-    <div id="dwtcontrolContainer" style="width: 350px; height: 380px;"></div>
-	<div style="margin-top: 30px;letter-spacing: 0px;color: #323234;font-size: 14px;">
-		<div style="font: normal normal 600 14px/27px Open Sans;">About: </div>
-		<div style="font: normal normal normal 14px/24px Open Sans;">This sample uses the Core Module of Dynamic Web TWAIN.</div>
-		<div style="margin-top: 10px;font: normal normal 600 14px/27px Open Sans;">Learn More:</div>
-		<div style="font: normal normal normal 14px/28px Open Sans;color: #FE8E14;">
-			<a style="color: #FE8E14;text-decoration: none;" target="_blank" href="https://www.dynamsoft.com/web-twain/docs/faq/download-virtual-scanner-for-testing.html?product=dwt&utm_source=installer">Download virtual scanner for testing ></a><br/>
-			<a style="color: #FE8E14;text-decoration: none;" target="_blank" href="https://www.dynamsoft.com/web-twain/docs/indepth/features/initialize.html#dynamsoftdwtload?product=dwt&utm_source=installer">How to initialize Dynamic Web TWAIN instance on demand ></a>        
-		</div>
-	</div>
+
+    <h3>Dynamic Web TWAIN — Scan Page (with LNA check)</h3>
+
+    <button id="btnScan">Scan</button>
+
+    <div id="dwtcontrolContainer" style="width: 350px; height: 380px; border: 1px solid #ddd; margin-top: 12px;"></div>
+
+    <div style="margin-top: 30px;letter-spacing: 0px;color: #323234;font-size: 14px;">
+        <div style="font: normal normal 600 14px/27px Open Sans;">About: </div>
+        <div style="font: normal normal normal 14px/24px Open Sans;">This sample uses the Core Module of Dynamic Web TWAIN.</div>
+        <div style="margin-top: 10px;font: normal normal 600 14px/27px Open Sans;">Learn More:</div>
+        <div style="font: normal normal normal 14px/28px Open Sans;color: #FE8E14;">
+            <a style="color: #FE8E14;text-decoration: none;" target="_blank" href="https://www.dynamsoft.com/web-twain/docs/faq/download-virtual-scanner-for-testing.html?product=dwt&utm_source=installer">Download virtual scanner for testing &gt;</a><br/>
+            <a style="color: #FE8E14;text-decoration: none;" target="_blank" href="https://www.dynamsoft.com/web-twain/docs/indepth/features/initialize.html#dynamsoftdwtload?product=dwt&utm_source=installer">How to initialize Dynamic Web TWAIN instance on demand &gt;</a>
+        </div>
+    </div>
 
 
     <script type="text/javascript">
-		var DWTObject;
-		Dynamsoft.DWT.RegisterEvent("OnWebTwainReady", function () {
-			DWTObject = Dynamsoft.DWT.GetWebTwain('dwtcontrolContainer'); // Get the Dynamic Web TWAIN object that is embeded in the div with id 'dwtcontrolContainer'
-		}); 
+        // -----------------------------
+        // Local Network Access (LNA) check
+        // -----------------------------
+        (async function checkLNA() {
+            try {
+                if (!navigator.permissions || !navigator.permissions.query) {
+                    console.log('Permissions API or LNA permission not supported in this browser.');
+                    return;
+                }
 
-		function AcquireImage() {
-            if (DWTObject) {
-				DWTObject.SelectSourceAsync().then(function(){
-					return DWTObject.AcquireImageAsync({
-					        IfCloseSourceAfterAcquire: true // Scanner source will be closed automatically after the scan.
-						});
-				}).catch(function (exp) {
-					alert(exp.message);
-				});
+                const perm = await navigator.permissions.query({ name: 'local-network-access' });
+                console.log('Local Network Access permission state:', perm.state);
+
+                if (perm.state === 'denied') {
+                    // Inform the user and show link to Chrome site settings for this origin
+                    const currentSite = encodeURIComponent(window.location.origin);
+                    const settingsUrl = `chrome://settings/content/siteDetails?site=${currentSite}`;
+                    alert('Local Network Access is DENIED for this site.\n\nPlease open Chrome site settings and enable "Local network access" for:\n' + window.location.origin);
+                    console.log('Open Chrome settings to enable LNA:', settingsUrl);
+                } else if (perm.state === 'prompt') {
+                    // Let the user know Chrome will prompt when we try to use the service.
+                    // The actual prompt appears when the page tries to connect to the local service.
+                    console.log('Local Network Access permission state: prompt. Chrome will ask when needed.');
+                    // Optionally show a friendly UI instruction to the user.
+                } else if (perm.state === 'granted') {
+                    console.log('Local Network Access already granted.');
+                } else {
+                    console.log('Unexpected LNA state:', perm.state);
+                }
+
+                // Listen to changes in permission state (optional)
+                perm.onchange = function () {
+                    console.log('LNA state changed to:', perm.state);
+                };
+
+            } catch (e) {
+                console.log('Error while checking Local Network Access permission or API not supported:', e);
             }
+        })();
+
+        // -----------------------------
+        // Dynamsoft WebTWAIN initialization and scan logic
+        // -----------------------------
+        var DWTObject = null;
+
+        // This event fires when DWT is ready
+        Dynamsoft.DWT.RegisterEvent('OnWebTwainReady', function () {
+            DWTObject = Dynamsoft.DWT.GetWebTwain('dwtcontrolContainer');
+            console.log('DWT ready, object:', DWTObject);
+        });
+
+        // Acquire image when button clicked
+        document.getElementById('btnScan').addEventListener('click', function () {
+            AcquireImage();
+        });
+
+        function AcquireImage() {
+            if (!DWTObject) {
+                alert('Dynamic Web TWAIN is not ready yet. Please wait a moment and try again.');
+                return;
+            }
+
+            // Typical flow: select source then acquire
+            DWTObject.SelectSourceAsync().then(function () {
+                return DWTObject.AcquireImageAsync({ IfCloseSourceAfterAcquire: true });
+            }).then(function (result) {
+                console.log('Acquire completed:', result);
+            }).catch(function (exp) {
+                // If LNA is denied, or local service not reachable, you'll likely see errors here.
+                console.error('AcquireImage error:', exp);
+                alert('Scan failed: ' + (exp && exp.message ? exp.message : JSON.stringify(exp)));
+            });
         }
+
+        // -----------------------------
+        // Helpful notes for Business Central / iframe usage
+        // -----------------------------
+        // 1) If Business Central loads this page inside an iframe, that iframe needs the attribute:
+        //      allow="local-network-access"
+        //    Example (if you were embedding manually in a hosting page):
+        //      <iframe src="/path/to/scan-page/index.html" allow="local-network-access"></iframe>
+        //
+        // 2) For Business Central control add-ins: set
+        //      RequestedPermissions = 'local-network-access';
+        //    in your AL Control Add-in definition.
+        //
+        // 3) Chrome requires the user to grant LNA for the origin (business central URL). The permission
+        //    prompt appears when the page attempts to reach the local network service (e.g. http://localhost:18622).
+        //
+        // 4) Ensure the scanning service runs on the expected host/port (commonly http://127.0.0.1:18622 or http://localhost:18622).
+
     </script>
+
 </body>
 
 </html>
