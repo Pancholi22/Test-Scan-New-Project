@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>Scan Diagnostic — DWT + Local Network Access</title>
 
-  <!-- Keep your Dynamsoft files in Resources/ -->
+  <!-- Keep your Dynamsoft files in Resources/ inside the extension -->
   <script type="text/javascript" src="Resources/dynamsoft.webtwain.initiate.js"></script>
   <script type="text/javascript" src="Resources/dynamsoft.webtwain.config.js"></script>
 
@@ -26,6 +26,7 @@
     <div><strong>LNA state:</strong> <span id="lnaState">checking…</span></div>
     <div><strong>Iframe:</strong> <span id="isIframe"></span></div>
     <div><strong>DWT ready:</strong> <span id="dwtReady">no</span></div>
+    <div id="bcHint" style="margin-top:8px;font-size:0.95em;color:#333;"></div>
   </div>
 
   <div>
@@ -43,8 +44,11 @@
 
   <script>
     // ------------------------------
-    // Small logger
+    // Configuration — set BC origin from your message
     // ------------------------------
+    const BC_ORIGIN = 'http://localhost:8080'; // <<-- your Business Central origin
+
+    // Small logger
     function log(msg, level) {
       const el = document.getElementById('log');
       const time = new Date().toISOString();
@@ -54,12 +58,19 @@
     }
 
     document.getElementById('origin').textContent = window.location.origin || 'file:// (local file)';
-
-    // Are we inside an iframe?
     document.getElementById('isIframe').textContent = (window.self !== window.top) ? 'YES (inside iframe)' : 'NO (top window)';
 
+    // Helper to open Chrome site settings for the BC origin
+    document.getElementById('btnOpenChromeSettings').addEventListener('click', function() {
+      const encoded = encodeURIComponent(BC_ORIGIN);
+      const chromeUrl = 'chrome://settings/content/siteDetails?site=' + encoded;
+      log('Open this in Chrome to allow Local network access for the BC origin: ' + chromeUrl);
+      try { window.open(chromeUrl, '_blank'); } catch(e) { log('Could not open chrome:// URL programmatically. Open manually: ' + chromeUrl, 'warn'); }
+      alert('Open Chrome and visit:\n\n' + chromeUrl + '\n\nThen set "Local network access" to Allow for this origin.');
+    });
+
     // ------------------------------
-    // Local Network Access (LNA) check
+    // LNA permission check (improved UX)
     // ------------------------------
     async function checkLNA() {
       const statusEl = document.getElementById('lnaState');
@@ -73,12 +84,25 @@
         statusEl.textContent = p.state;
         log('LNA permission state: ' + p.state);
         p.onchange = () => { statusEl.textContent = p.state; log('LNA state changed to: ' + p.state); };
+
+        // Provide inline hint for BC origin if not granted
+        const bcHintEl = document.getElementById('bcHint');
+        if (p.state === 'denied') {
+          bcHintEl.innerHTML = 'Local Network Access is <span class="err">denied</span>. Grant it for Business Central origin: <code>' + BC_ORIGIN + '</code>. Click "Open Chrome site settings" above.';
+        } else if (p.state === 'prompt') {
+          bcHintEl.innerHTML = 'Local Network Access needs to be allowed by Chrome for this origin. You will be prompted when DWT tries to access local network. Click "Scan" and allow the prompt.';
+        } else if (p.state === 'granted') {
+          bcHintEl.innerHTML = '<span class="ok">Local Network Access granted</span> for this origin.';
+        } else {
+          bcHintEl.innerHTML = 'LNA state: ' + p.state;
+        }
       } catch (e) {
-        statusEl.textContent = 'unsupported';
+        document.getElementById('lnaState').textContent = 'unsupported';
         log('Error checking LNA permission (likely unsupported): ' + e, 'warn');
       }
     }
 
+    // Run check on load
     checkLNA();
 
     // ------------------------------
@@ -95,18 +119,15 @@
       for (const url of urls) {
         try {
           log('Probing ' + url + ' ...');
-          // Try a GET; do not follow redirects automatically in fetch (default follows)
           const controller = new AbortController();
           const timeout = setTimeout(() => controller.abort(), 3000);
           const resp = await fetch(url, { method: 'GET', mode: 'no-cors', signal: controller.signal });
           clearTimeout(timeout);
-          // mode:no-cors will often not expose status, but attempting it can still trigger LNA prompt / network request.
           log('Probe attempt to ' + url + ' completed (no-cors). Response object: ' + JSON.stringify({
-            ok: resp && resp.ok,
-            type: resp && resp.type,
-            status: resp && resp.status
+            ok: (resp && resp.ok) || false,
+            type: (resp && resp.type) || 'unknown',
+            status: (resp && resp.status) || 'unknown'
           }));
-          // If fetch didn't throw, we consider it at least reachable at network level
         } catch (err) {
           log('Probe to ' + url + ' failed: ' + (err && err.message ? err.message : String(err)), 'error');
         }
@@ -117,24 +138,12 @@
     document.getElementById('btnTestLocal').addEventListener('click', probeLocalService);
 
     // ------------------------------
-    // Button to open Chrome site settings for current origin
-    // (User must open manually — some browsers block programmatic navigation to chrome://)
-    // ------------------------------
-    document.getElementById('btnOpenChromeSettings').addEventListener('click', function() {
-      const origin = encodeURIComponent(window.location.origin);
-      const chromeUrl = 'chrome://settings/content/siteDetails?site=' + origin;
-      log('Please open the following in Chrome to allow Local network access for this origin: ' + chromeUrl);
-      try { window.open(chromeUrl, '_blank'); } catch(e) { log('Could not open chrome:// URL programmatically. Open it manually in Chrome: ' + chromeUrl, 'warn'); }
-    });
-
-    // ------------------------------
     // Dynamsoft WebTWAIN initialization and better error reporting
     // ------------------------------
     var DWTObject = null;
     document.getElementById('dwtReady').textContent = 'no';
 
     try {
-      // Register event
       Dynamsoft.DWT.RegisterEvent('OnWebTwainReady', function() {
         try {
           DWTObject = Dynamsoft.DWT.GetWebTwain('dwtcontrolContainer');
@@ -149,14 +158,24 @@
       log('Error registering OnWebTwainReady: ' + err, 'error');
     }
 
-    // Helper to display friendly errors
     function showErrorToUser(title, msg) {
       log(title + ' - ' + msg, 'error');
       alert(title + '\\n\\n' + msg);
     }
 
-    // Improved AcquireImage with explicit error capture and diagnostic hints
     async function AcquireImage() {
+      // Re-check LNA before starting
+      try {
+        const p = await navigator.permissions.query({ name: 'local-network-access' });
+        if (p.state !== 'granted') {
+          showErrorToUser('Local Network Access not granted', 'Chrome has not granted Local Network Access for this origin. Please open site settings and allow it for ' + BC_ORIGIN + '.');
+          return;
+        }
+      } catch (e) {
+        // proceed but warn
+        log('Could not confirm LNA state before AcquireImage: ' + e, 'warn');
+      }
+
       if (!DWTObject) {
         showErrorToUser('Not Ready', 'DWT object not ready. Wait a few seconds and retry. Check browser console for details.');
         return;
@@ -169,10 +188,9 @@
       } catch (err) {
         const m = err && err.message ? err.message : JSON.stringify(err);
         log('SelectSourceAsync failed: ' + m, 'error');
-        // Provide targeted hints:
         let hint = '';
         if (/local network/i.test(m) || /permission/i.test(m)) {
-          hint = 'Chrome Local Network Access may be denied for this origin. Ensure iframe has allow=\"local-network-access\" and BC add-in has RequestedPermissions.';
+          hint = 'Chrome Local Network Access may be denied for this origin. Ensure iframe has allow="local-network-access" and BC add-in has RequestedPermissions.';
         } else if (/timeout|connect/i.test(m)) {
           hint = 'Could not reach the local scanner service. Is the scanner service running? Check port (18622) and firewall.';
         } else {
@@ -192,7 +210,7 @@
         log('AcquireImageAsync failed: ' + m, 'error');
         let hint = '';
         if (/local network/i.test(m) || /permission/i.test(m)) {
-          hint = 'Local Network Access permission might be denied for this origin. See chrome://settings/content/siteDetails?site=' + encodeURIComponent(window.location.origin);
+          hint = 'Local Network Access permission might be denied for this origin. See chrome://settings/content/siteDetails?site=' + encodeURIComponent(BC_ORIGIN);
         } else if (/no response|connect|ECONNREFUSED/i.test(m)) {
           hint = 'Local scanner service not reachable (connection refused). Make sure the scanner service is running and not blocked by firewall.';
         } else {
@@ -204,20 +222,17 @@
 
     document.getElementById('btnScan').addEventListener('click', AcquireImage);
 
-    // ------------------------------
-    // Helpful checklist (printed to log)
-    // ------------------------------
+    // Print helpful notes to the log
     log('Diagnostic helper loaded. Checklist:');
-    log('1) Is the local scanner service running? Common addresses: http://127.0.0.1:18622 or http://localhost:18622');
-    log('2) If inside Business Central iframe: the iframe must include attribute: allow=\"local-network-access\" and the AL control add-in should include RequestedPermissions = \\\"local-network-access\\\"');
-    log('3) Chrome must grant Local Network Access for the BC origin (open chrome://settings/content/siteDetails?site=<origin>)');
-    log('4) If site is served via HTTPS, local scanner service is HTTP — Chrome may block mixed active content. Use iframe allow + LNA and check console for Mixed Content errors.');
-    log('5) Firewall/Antivirus can block local ports; temporarily disable to test.');
-    log('6) If probes show fetch failing with CORS or blocked, inspect the network tab in DevTools (F12).');
+    log('1) BC origin: ' + BC_ORIGIN + ' — make sure Chrome site settings grants Local Network Access for this origin.');
+    log('2) If inside Business Central iframe: the control add-in must include RequestedPermissions = "local-network-access".');
+    log('3) If the page is cross-origin (GitHub Pages), the embedding iframe chain must include allow="local-network-access". Otherwise bundle the page into the extension.');
+    log('4) Check DevTools Console / Network for exact blocked request messages.');
 
-    // Print BC AL snippet for RequestedPermissions (developer can use this)
+    // AL control add-in snippet for reference
     log('AL Control Add-in snippet (example):');
-    log("controladdin MyScanAddin\n{\n  Scripts = 'index.html';\n  RequestedPermissions = 'local-network-access';\n}\n");
+    log("controladdin MyScanAddin\\n{\\n  Scripts = 'index.html';\\n  RequestedPermissions = 'local-network-access';\\n}\\n");
+
   </script>
 </body>
 </html>
